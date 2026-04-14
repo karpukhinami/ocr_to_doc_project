@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import "./App.css";
 
 const API = "/api";
@@ -20,9 +20,31 @@ interface DocItem {
   markdown?: string;
   figures?: FigureInfo[];
   error?: string;
+  /** Модель OpenRouter из ответа /process-image (для проверки) */
+  modelUsed?: string;
   textContent?: string;
   /** Уже попало в последний экспорт docx/md */
   docxIncluded: boolean;
+}
+
+/** Текст поля `detail` из FastAPI (строка или список ошибок валидации). */
+function formatFastApiDetail(detail: unknown): string {
+  if (detail == null) return "";
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    return detail
+      .map((item) => {
+        if (item && typeof item === "object" && "msg" in item) {
+          return String((item as { msg: string }).msg);
+        }
+        return JSON.stringify(item);
+      })
+      .join("; ");
+  }
+  if (typeof detail === "object" && "message" in (detail as object)) {
+    return String((detail as { message: string }).message);
+  }
+  return String(detail);
 }
 
 function newId(): string {
@@ -40,6 +62,55 @@ function kindFromFile(f: File): ItemKind | null {
   if (["txt", "md"].includes(e)) return "text";
   if (e === "docx") return "docx";
   return null;
+}
+
+/** Изображения из буфера обмена (Win+V / PrintScreen + Ctrl+V и т.п.). */
+function filesFromClipboard(e: ClipboardEvent): File[] {
+  const items = e.clipboardData?.items;
+  if (!items?.length) return [];
+
+  const out: File[] = [];
+  const stamp = Date.now();
+  let imageIdx = 0;
+
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    if (item.kind !== "file") continue;
+    const mime = item.type || "";
+    if (!mime.startsWith("image/")) continue;
+
+    const blob = item.getAsFile();
+    if (!blob || blob.size === 0) continue;
+
+    const ext =
+      mime === "image/png"
+        ? "png"
+        : mime === "image/jpeg" || mime === "image/jpg"
+          ? "jpg"
+          : mime === "image/webp"
+            ? "webp"
+            : mime === "image/gif"
+              ? "gif"
+              : "png";
+
+    const hasSensibleName = blob.name && /\.(png|jpe?g|webp|gif)$/i.test(blob.name);
+    const name = hasSensibleName ? blob.name : `paste-${stamp}-${imageIdx}.${ext}`;
+    imageIdx += 1;
+
+    out.push(
+      hasSensibleName ? blob : new File([blob], name, { type: blob.type || mime })
+    );
+  }
+
+  return out;
+}
+
+function isEditableTarget(el: EventTarget | null): boolean {
+  if (!el || !(el instanceof HTMLElement)) return false;
+  const tag = el.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA") return true;
+  if (el.isContentEditable) return true;
+  return el.closest("input, textarea, [contenteditable='true']") !== null;
 }
 
 function rewriteFigurePaths(md: string, itemId: string): string {
@@ -61,6 +132,8 @@ export default function App() {
   const [totalJobs, setTotalJobs] = useState(0);
   const [modal, setModal] = useState<"docx" | "md" | null>(null);
   const [hasExportedOnce, setHasExportedOnce] = useState(false);
+  /** Сводка ошибок последнего прогона «Распознать» (OpenRouter / сервер). */
+  const [recognizeSummaryError, setRecognizeSummaryError] = useState<string | null>(null);
 
   const revokePreview = useCallback((it: DocItem) => {
     if (it.previewUrl) URL.revokeObjectURL(it.previewUrl);
@@ -116,11 +189,19 @@ export default function App() {
       const fd = new FormData();
       fd.append("file", it.file);
       const r = await fetch(`${API}/extract-docx-text`, { method: "POST", body: fd });
-      if (!r.ok) {
-        const err = await r.json().catch(() => ({}));
-        throw new Error((err as { detail?: string }).detail || r.statusText);
+      const raw = await r.text();
+      let parsed: unknown;
+      try {
+        parsed = raw ? JSON.parse(raw) : {};
+      } catch {
+        if (!r.ok) throw new Error(`[HTTP ${r.status}] ${raw.slice(0, 800)}`);
+        throw new Error("Некорректный JSON ответа");
       }
-      const data = (await r.json()) as { text: string };
+      if (!r.ok) {
+        const msg = formatFastApiDetail((parsed as { detail?: unknown }).detail);
+        throw new Error(msg ? `[HTTP ${r.status}] ${msg}` : `[HTTP ${r.status}] ${raw.slice(0, 800)}`);
+      }
+      const data = parsed as { text: string };
       out = out.map((x) =>
         x.id === it.id ? { ...x, textContent: data.text, processed: true } : x
       );
@@ -141,21 +222,37 @@ export default function App() {
     const targets = items.filter((i) => i.kind === "image" && !i.processed);
     if (targets.length === 0) return;
     setBusy(true);
+    setRecognizeSummaryError(null);
+    setItems((prev) => prev.map((x) => ({ ...x, error: undefined })));
     setTotalJobs(targets.length);
     setProgress(0);
     let done = 0;
+    let lastFailedMsg: string | null = null;
     for (const it of targets) {
       const fd = new FormData();
       fd.append("file", it.file);
       try {
         const r = await fetch(`${API}/process-image`, { method: "POST", body: fd });
-        const data = await r.json().catch(() => ({}));
+        const raw = await r.text();
+        let data: unknown;
+        try {
+          data = raw ? JSON.parse(raw) : {};
+        } catch {
+          if (!r.ok) {
+            throw new Error(`[HTTP ${r.status}] Ответ не JSON: ${raw.slice(0, 500)}`);
+          }
+          throw new Error("Пустой или некорректный JSON от сервера");
+        }
         if (!r.ok) {
-          throw new Error((data as { detail?: string }).detail || r.statusText);
+          const msg = formatFastApiDetail((data as { detail?: unknown }).detail);
+          throw new Error(
+            msg ? `[HTTP ${r.status}] ${msg}` : `[HTTP ${r.status}] ${raw.slice(0, 4000) || r.statusText}`
+          );
         }
         const payload = data as {
           markdown: string;
           figures: FigureInfo[];
+          model?: string;
         };
         setItems((prev) =>
           prev.map((x) =>
@@ -165,6 +262,7 @@ export default function App() {
                   processed: true,
                   markdown: payload.markdown,
                   figures: payload.figures,
+                  modelUsed: payload.model,
                   error: undefined,
                 }
               : x
@@ -172,12 +270,19 @@ export default function App() {
         );
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
+        lastFailedMsg = msg;
         setItems((prev) =>
           prev.map((x) => (x.id === it.id ? { ...x, error: msg, processed: false } : x))
         );
       }
       done += 1;
       setProgress(done);
+    }
+    if (lastFailedMsg) {
+      setRecognizeSummaryError(
+        "При распознавании были ошибки. Подробности у соответствующих файлов ниже. Последняя: " +
+          lastFailedMsg
+      );
     }
     setBusy(false);
   };
@@ -316,7 +421,21 @@ export default function App() {
     setHasExportedOnce(false);
     setProgress(0);
     setTotalJobs(0);
+    setRecognizeSummaryError(null);
   };
+
+  /** Вставка скриншотов Ctrl+V с любой точки страницы (кроме полей ввода). */
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      if (isEditableTarget(e.target)) return;
+      const files = filesFromClipboard(e);
+      if (files.length === 0) return;
+      e.preventDefault();
+      void addFiles(files);
+    };
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
+  }, [addFiles]);
 
   return (
     <div className="app">
@@ -328,6 +447,9 @@ export default function App() {
 
       <div
         className={`dropzone ${drag ? "drag" : ""}`}
+        tabIndex={0}
+        role="region"
+        aria-label="Зона загрузки файлов и вставки из буфера обмена"
         onDragOver={(e) => {
           e.preventDefault();
           setDrag(true);
@@ -339,7 +461,10 @@ export default function App() {
           if (e.dataTransfer.files?.length) void addFiles(e.dataTransfer.files);
         }}
       >
-        <p>Перетащите файлы сюда или выберите на диске</p>
+        <p>
+          Перетащите файлы сюда, выберите на диске или вставьте скриншот из буфера (
+          <kbd>Ctrl</kbd>+<kbd>V</kbd> / <kbd>⌘</kbd>+<kbd>V</kbd>)
+        </p>
         <button type="button" className="btn btn-primary" onClick={() => document.getElementById("f")?.click()}>
           Загрузить файлы
         </button>
@@ -377,9 +502,18 @@ export default function App() {
         </div>
       )}
 
+      {recognizeSummaryError && (
+        <div className="error-banner" role="alert">
+          <div className="error-banner-text">{recognizeSummaryError}</div>
+          <button type="button" className="btn error-banner-close" onClick={() => setRecognizeSummaryError(null)}>
+            Закрыть
+          </button>
+        </div>
+      )}
+
       <div className="file-list">
         {items.map((it) => (
-          <div key={it.id} className="file-row">
+          <div key={it.id} className={`file-row ${it.error ? "file-row-error" : ""}`}>
             {it.kind === "image" && it.previewUrl ? (
               <img className="preview" src={it.previewUrl} alt="" />
             ) : (
@@ -394,8 +528,15 @@ export default function App() {
                   (it.processed ? "Распознано" : "Новое изображение")}
                 {it.kind === "text" && "Текст"}
                 {it.kind === "docx" && (it.textContent !== undefined ? "Текст извлечён" : "Ожидает извлечения")}
-                {it.error && ` — Ошибка: ${it.error}`}
+                {it.kind === "image" && it.processed && it.modelUsed && (
+                  <span className="model-used"> · Модель: {it.modelUsed}</span>
+                )}
               </div>
+              {it.error && (
+                <pre className="error-detail" title={it.error}>
+                  {it.error}
+                </pre>
+              )}
             </div>
             <button type="button" className="btn" onClick={() => removeItem(it.id)}>
               Удалить

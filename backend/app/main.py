@@ -128,12 +128,18 @@ async def process_image(
         figure_count = len(crops_png)
         mime = _guess_mime(file)
 
-        md_raw = await call_openrouter_vision(
-            settings,
-            image_mime=mime,
-            image_bytes=raw,
-            figure_count=figure_count,
-        )
+        try:
+            md_raw = await call_openrouter_vision(
+                settings,
+                image_mime=mime,
+                image_bytes=raw,
+                figure_count=figure_count,
+            )
+        except RuntimeError as e:
+            # Ошибки OpenRouter (HTTP 4xx/5xx, неверный ключ, лимиты)
+            logger.warning("OpenRouter: %s", e)
+            raise HTTPException(502, str(e)) from e
+
         # Сначала добиваем пропущенные [РИС:N], затем заменяем на Markdown-картинки
         md = append_missing_figures(md_raw, figure_count, media_dir_name="media")
         md = apply_figure_markers(md, media_dir_name="media")
@@ -153,6 +159,7 @@ async def process_image(
                 "markdown": md,
                 "figures": figures_out,
                 "figure_count": figure_count,
+                "model": settings.openrouter_model,
             }
         )
     except HTTPException:
