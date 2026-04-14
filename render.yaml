@@ -1,0 +1,29 @@
+# Blueprint Render: https://render.com/docs/infrastructure-as-code
+# После подключения репозитория Render подхватит этот файл при включении Blueprint.
+# Секреты (sync: false) нужно задать в Dashboard вручную — см. DEPLOY_RENDER.md
+
+services:
+  - type: web
+    name: ocr-to-doc
+    runtime: docker
+    plan: free
+    region: frankfurt
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: TMP_ROOT
+        value: /app/tmp
+      - key: OPENROUTER_BASE_URL
+        value: https://openrouter.ai/api/v1
+      - key: OPENROUTER_MODEL
+        value: qwen/qwen3-vl-235b-a22b-instruct
+      # Секреты: задайте в Render → Environment (не коммитьте в git)
+      - key: OPENROUTER_API_KEY
+        sync: false
+      # URL вашего приложения на Render, например https://ocr-to-doc.onrender.com
+      - key: CORS_ORIGINS
+        sync: false

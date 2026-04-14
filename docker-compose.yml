@@ -1,0 +1,17 @@
+# Локальный запуск: API на :8000 (внутри контейнера собранный фронт).
+# Для разработки с hot-reload: терминал 1 — uvicorn backend; терминал 2 — npm run dev (frontend).
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      TMP_ROOT: /app/tmp
+      CORS_ORIGINS: "http://localhost:5173,http://127.0.0.1:5173,http://localhost:8000"
+    volumes:
+      - ocr_tmp:/app/tmp
+
+volumes:
+  ocr_tmp: {}

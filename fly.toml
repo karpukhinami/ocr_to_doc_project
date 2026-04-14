@@ -1,0 +1,20 @@
+# Пример для Fly.io: fly launch --no-deploy, затем fly secrets set OPENROUTER_API_KEY=...
+# Образ: Dockerfile в корне репозитория.
+
+app = "ocr-to-doc"
+primary_region = "fra"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[vm]]
+  memory = "2gb"
+  cpu_kind = "shared"
+  cpus = 2
