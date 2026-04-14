@@ -86,7 +86,12 @@ def analyze_layout(image_bgr: np.ndarray) -> list[LayoutBlock]:
     gray = cv2.cvtColor(work, cv2.COLOR_BGR2GRAY)
     gray = cv2.bilateralFilter(gray, 5, 50, 50)
     bw = cv2.adaptiveThreshold(
-        gray, 255, cv2.ADAPTIVE_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 31, 12
+        gray,
+        255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY_INV,
+        31,
+        12,
     )
 
     # Горизонтальное смыкание — объединяет строки текста в полосы
