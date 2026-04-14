@@ -21,7 +21,7 @@ from .config import Settings, get_settings
 from .docx_export import run_pandoc_docx
 from .docx_text import extract_text_from_docx
 from .layout import analyze_layout
-from .markdown_merge import append_missing_figures, apply_figure_markers
+from .markdown_merge import strip_markdown_images
 from .openrouter_client import call_openrouter_vision
 from .temp_storage import new_session_dir, rm_tree, safe_join
 
@@ -98,7 +98,8 @@ async def process_image(
     file: UploadFile = File(...),
 ) -> JSONResponse:
     """
-    Layout → вырезка figure → OpenRouter → markdown + base64 фигур.
+    Layout → вырезка областей (коллекция PNG) + OpenRouter по полному изображению → markdown.
+    В ответе модели убираются вставки ![...](...) — картинки в документе задаёт только клиент.
     """
     raw = await file.read()
     if len(raw) > settings.max_upload_bytes:
@@ -114,12 +115,13 @@ async def process_image(
         fig_blocks = [b for b in blocks if b.kind == "figure"]
         fig_blocks.sort(key=lambda b: (b.y, b.x))
 
-        # Сначала готовим PNG, затем считаем N для промпта (индексы 1..N подряд)
+        # Вырезки только для коллекции и DOCX (полный кадр в модель не отправляется фрагментами)
         crops_png: list[tuple[int, bytes]] = []
         for b in fig_blocks:
             crop = image_bgr[b.y : b.y + b.h, b.x : b.x + b.w]
             if crop.size == 0:
                 continue
+            crop = np.ascontiguousarray(crop)
             ok, buf = cv2.imencode(".png", crop)
             if not ok:
                 continue
@@ -133,16 +135,13 @@ async def process_image(
                 settings,
                 image_mime=mime,
                 image_bytes=raw,
-                figure_count=figure_count,
             )
         except RuntimeError as e:
             # Ошибки OpenRouter (HTTP 4xx/5xx, неверный ключ, лимиты)
             logger.warning("OpenRouter: %s", e)
             raise HTTPException(502, str(e)) from e
 
-        # Сначала добиваем пропущенные [РИС:N], затем заменяем на Markdown-картинки
-        md = append_missing_figures(md_raw, figure_count, media_dir_name="media")
-        md = apply_figure_markers(md, media_dir_name="media")
+        md = strip_markdown_images(md_raw)
 
         figures_out: list[dict[str, object]] = []
         for idx, png_bytes in crops_png:
@@ -183,14 +182,16 @@ async def convert_docx(
         media = safe_join(session, "media")
         media.mkdir(parents=True, exist_ok=True)
 
-        # Любые безопасные имена *.png, как в ссылках markdown (media/...)
-        safe_png = re.compile(r"^[A-Za-z0-9_.\-]+\.png$")
+        # Безопасные имена файлов для media/ (оригинал скриншота + вырезанные PNG)
+        safe_media = re.compile(
+            r"^[A-Za-z0-9_.\-]+\.(png|jpg|jpeg|webp|gif)$", re.IGNORECASE
+        )
         for up in files or []:
             if not up.filename:
                 continue
             base = Path(up.filename).name
-            if not safe_png.match(base):
-                raise HTTPException(400, f"Invalid figure filename: {base}")
+            if not safe_media.match(base):
+                raise HTTPException(400, f"Недопустимое имя файла: {base}")
             data = await up.read()
             if len(data) > settings.max_upload_bytes:
                 raise HTTPException(413, "Figure file too large")

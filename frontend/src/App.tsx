@@ -113,8 +113,11 @@ function isEditableTarget(el: EventTarget | null): boolean {
   return el.closest("input, textarea, [contenteditable='true']") !== null;
 }
 
-function rewriteFigurePaths(md: string, itemId: string): string {
-  return md.replace(/media\/fig_(\d+)\.png/g, `media/${itemId}_fig_$1.png`);
+/** Удаляет из ответа модели синтаксис картинок — в DOCX картинки задаёт только сборщик. */
+function stripMarkdownImages(md: string): string {
+  let s = md.replace(/!\[[^\]]*\]\([^)]*\)/g, "");
+  s = s.replace(/<img\b[^>]*>/gi, "");
+  return s.replace(/\n{3,}/g, "\n\n").trim();
 }
 
 function base64ToBlob(b64: string): Blob {
@@ -299,15 +302,31 @@ export default function App() {
       if (onlyNew && it.docxIncluded) continue;
 
       if (it.kind === "image") {
-        if (!it.markdown) continue;
+        if (!it.processed) continue;
         shot += 1;
+        const ext = extOf(it.file.name) || "png";
+        const origName = `original_${it.id}.${ext}`;
+
         parts.push(`\n\n========= скриншот ${shot} =========\n\n`);
-        const md = rewriteFigurePaths(it.markdown, it.id);
-        parts.push(md);
+        parts.push(`![Исходное изображение](media/${origName})\n\n`);
+        parts.push(`* * *\n\n`);
+        parts.push(stripMarkdownImages(it.markdown || ""));
+        if (it.figures && it.figures.length > 0) {
+          parts.push(`\n\n* * *\n\n`);
+          for (const f of it.figures) {
+            parts.push(
+              `![Вырезанный фрагмент ${f.index}](media/${it.id}_fig_${f.index}.png)\n\n`
+            );
+          }
+        }
+
+        blobs.push({ name: origName, blob: it.file });
         if (it.figures) {
           for (const f of it.figures) {
-            const name = `${it.id}_fig_${f.index}.png`;
-            blobs.push({ name, blob: base64ToBlob(f.base64) });
+            blobs.push({
+              name: `${it.id}_fig_${f.index}.png`,
+              blob: base64ToBlob(f.base64),
+            });
           }
         }
       } else if (it.kind === "text" && it.textContent !== undefined) {
@@ -441,8 +460,8 @@ export default function App() {
     <div className="app">
       <h1>OCR → Markdown → Word</h1>
       <p className="sub">
-        Загрузите скриншоты и текстовые файлы. Распознавание — только для изображений. Экспорт в{" "}
-        <code>.docx</code> через Pandoc на сервере.
+        Распознавание идёт по целому скриншоту; вырезанные блоки (схемы, вставки) собираются отдельно и
+        попадают в документ после текста. Экспорт в <code>.docx</code> — через Pandoc на сервере.
       </p>
 
       <div

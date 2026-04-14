@@ -1,5 +1,5 @@
 """
-Замена маркеров [РИС:k] на Markdown-изображения с путями для Pandoc.
+Утилиты для Markdown: старые маркеры [РИС:N], очистка синтаксиса картинок из ответа VL.
 """
 
 from __future__ import annotations
@@ -8,6 +8,23 @@ import re
 from pathlib import Path
 
 _MARKER_RE = re.compile(r"\[РИС:\s*(\d+)\s*\]", re.IGNORECASE)
+
+# Markdown image: ![alt](url) или ![alt](url "title")
+_MD_IMAGE = re.compile(r"!\[[^\]]*\]\([^)]*\)", re.MULTILINE)
+# Редко модель вставляет HTML-картинки
+_HTML_IMG = re.compile(r"<img\b[^>]*>", re.IGNORECASE)
+
+
+def strip_markdown_images(text: str) -> str:
+    """
+    Убирает вставки картинок в Markdown/HTML, чтобы в документ не попали
+    «содержательные» картинки из ответа модели (только текст и [описания]).
+    """
+    s = _MD_IMAGE.sub("", text)
+    s = _HTML_IMG.sub("", s)
+    # Сжимаем лишние пустые строки после удаления
+    s = re.sub(r"\n{3,}", "\n\n", s)
+    return s.strip()
 
 
 def apply_figure_markers(markdown: str, media_dir_name: str = "media") -> str:
