@@ -1,8 +1,19 @@
 :root {
-  font-family: system-ui, "Segoe UI", Roboto, sans-serif;
-  line-height: 1.45;
-  color: #1a1a1a;
-  background: #f4f5f7;
+  --bg-page: #f2f3f8;
+  --bg-card: #ffffff;
+  --text: #2d2d35;
+  --text-muted: #6b6b78;
+  --lavender: #b8bcf0;
+  --lavender-deep: #9ea4e8;
+  --lavender-soft: #e8e9fc;
+  --lavender-border: #d4d7f5;
+  --radius-lg: 18px;
+  --radius-md: 14px;
+  --shadow-soft: 0 4px 20px rgba(80, 80, 120, 0.08);
+  font-family: "Inter", system-ui, "Segoe UI", Roboto, sans-serif;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--bg-page);
 }
 
 * {
@@ -21,4 +32,11 @@ button {
 
 input[type="file"] {
   display: none;
+}
+
+code {
+  font-size: 0.9em;
+  background: var(--lavender-soft);
+  padding: 0.1em 0.35em;
+  border-radius: 6px;
 }

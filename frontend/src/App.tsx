@@ -307,17 +307,19 @@ export default function App() {
         const ext = extOf(it.file.name) || "png";
         const origName = `original_${it.id}.${ext}`;
 
-        parts.push(`\n\n========= скриншот ${shot} =========\n\n`);
+        parts.push(`\n\n---- скрин ${shot} - исходник ----\n\n`);
         parts.push(`![Исходное изображение](media/${origName})\n\n`);
-        parts.push(`* * *\n\n`);
+        parts.push(`---- распознанный текст ------\n\n`);
         parts.push(stripMarkdownImages(it.markdown || ""));
+        parts.push(`\n\n---- вырезанные картинки ----\n\n`);
         if (it.figures && it.figures.length > 0) {
-          parts.push(`\n\n* * *\n\n`);
           for (const f of it.figures) {
             parts.push(
               `![Вырезанный фрагмент ${f.index}](media/${it.id}_fig_${f.index}.png)\n\n`
             );
           }
+        } else {
+          parts.push(`_Вырезанных фрагментов не найдено._\n\n`);
         }
 
         blobs.push({ name: origName, blob: it.file });
@@ -458,11 +460,13 @@ export default function App() {
 
   return (
     <div className="app">
-      <h1>OCR → Markdown → Word</h1>
-      <p className="sub">
-        Распознавание идёт по целому скриншоту; вырезанные блоки (схемы, вставки) собираются отдельно и
-        попадают в документ после текста. Экспорт в <code>.docx</code> — через Pandoc на сервере.
-      </p>
+      <header className="app-header">
+        <h1>OCR → Markdown → Word</h1>
+        <p className="sub">
+          Распознавание по целому скриншоту; вырезанные блоки — в конце секции. Экспорт в{" "}
+          <code>.docx</code> через Pandoc на сервере.
+        </p>
+      </header>
 
       <div
         className={`dropzone ${drag ? "drag" : ""}`}
@@ -499,27 +503,22 @@ export default function App() {
         />
       </div>
 
-      <div className="actions">
-        <button type="button" className="btn btn-primary" disabled={busy || pendingImages === 0} onClick={() => void recognize()}>
-          Распознать
-        </button>
-        <button type="button" className="btn" disabled={busy || items.length === 0} onClick={() => void onSaveDocx()}>
-          Сохранить DOCX
-        </button>
-        <button type="button" className="btn" disabled={items.length === 0} onClick={() => onSaveMd()}>
-          Сохранить Markdown
-        </button>
-        <button type="button" className="btn btn-danger" onClick={clearAll}>
-          Очистить всё
-        </button>
-      </div>
-
-      {busy && totalJobs > 0 && (
-        <div className="progress-wrap">
-          <label>Распознавание: {progress} / {totalJobs}</label>
-          <progress value={progress} max={totalJobs} />
+      <div className="actions-wrap">
+        <div className="actions">
+          <button type="button" className="btn btn-primary" disabled={busy || pendingImages === 0} onClick={() => void recognize()}>
+            Распознать
+          </button>
+          <button type="button" className="btn btn-secondary" disabled={busy || items.length === 0} onClick={() => void onSaveDocx()}>
+            Сохранить DOCX
+          </button>
+          <button type="button" className="btn btn-secondary" disabled={items.length === 0} onClick={() => onSaveMd()}>
+            Сохранить Markdown
+          </button>
+          <button type="button" className="btn btn-danger" onClick={clearAll}>
+            Очистить всё
+          </button>
         </div>
-      )}
+      </div>
 
       {recognizeSummaryError && (
         <div className="error-banner" role="alert">
@@ -563,6 +562,15 @@ export default function App() {
           </div>
         ))}
       </div>
+
+      {busy && totalJobs > 0 && (
+        <div className="progress-wrap">
+          <label>Распознавание: {progress} / {totalJobs}</label>
+          <div className="progress-bar" role="progressbar" aria-valuenow={progress} aria-valuemin={0} aria-valuemax={totalJobs}>
+            <div className="progress-bar-fill" style={{ width: `${(progress / totalJobs) * 100}%` }} />
+          </div>
+        </div>
+      )}
 
       {modal && (
         <div
