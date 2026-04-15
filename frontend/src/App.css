@@ -331,6 +331,18 @@
   cursor: pointer;
 }
 
+.save-params-form input[type="radio"],
+.save-params-form input[type="checkbox"] {
+  accent-color: var(--lavender-deep);
+  width: 1.05rem;
+  height: 1.05rem;
+  cursor: pointer;
+}
+
+.save-params-form input[type="radio"] {
+  margin-top: 0.18rem;
+}
+
 .btn-looks-disabled {
   opacity: 0.45;
   cursor: not-allowed;

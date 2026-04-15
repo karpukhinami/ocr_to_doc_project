@@ -173,7 +173,7 @@ function base64ToBlob(b64: string): Blob {
 function singleMdDownloadName(original: string): string {
   const i = original.lastIndexOf(".");
   const base = i > 0 ? original.slice(0, i) : original;
-  return `${base || "скриншот"}.md`;
+  return `${base || "снимок"}.md`;
 }
 
 export default function App() {
@@ -385,13 +385,13 @@ export default function App() {
         const origName = `original_${it.id}.${ext}`;
 
         if (opts.insertScreenshots) {
-          parts.push(sepCenter(`========== скриншот ${n} ==========`));
-          parts.push(`![скриншот ${n}](media/${origName})\n\n`);
+          parts.push(sepCenter(`========== снимок экрана ${n} ==========`));
+          parts.push(`![](media/${origName})\n\n`);
           blobs.push({ name: origName, blob: it.file });
         }
 
         if (opts.insertFigures && it.figures && it.figures.length > 0) {
-          parts.push(sepCenter(`=== фрагменты изображений ===`));
+          parts.push(sepCenter(`========== фрагменты изображений ==========`));
           for (const f of it.figures) {
             parts.push(`![фрагмент ${f.index}](media/${it.id}_fig_${f.index}.png)\n\n`);
             parts.push(sepCenter(`фрагмент ${f.index}`));
@@ -403,16 +403,16 @@ export default function App() {
         }
 
         const rawMd = stripMarkdownImages(it.markdown || "");
-        parts.push(sepCenter(`=== текст скриншота ${n} ===`));
+        parts.push(sepCenter(`========== текст снимка экрана ${n} ==========`));
         parts.push(opts.convertMarkdown ? `${rawMd}\n\n` : wrapMarkdownAsLiteral(rawMd));
         continue;
       }
 
       if (it.kind === "text" && it.textContent !== undefined) {
-        parts.push(`\n\n========= файл: ${it.file.name} =========\n\n`);
+        parts.push(`\n\n========== файл: ${it.file.name} ==========\n\n`);
         parts.push(it.textContent);
       } else if (it.kind === "docx" && it.textContent !== undefined) {
-        parts.push(`\n\n========= файл: ${it.file.name} =========\n\n`);
+        parts.push(`\n\n========== файл: ${it.file.name} ==========\n\n`);
         parts.push(it.textContent);
       }
     }
@@ -512,9 +512,9 @@ export default function App() {
   return (
     <div className="app">
       <header className="app-header">
-        <h1>Перевод скриншотов в Word</h1>
+        <h1>Перевод снимков экрана в Word</h1>
         <p className="sub">
-          Сделайте один или несколько скриншотов, вставьте их из буфера обмена или загрузите как изображения. Распознавание
+          Сделайте один или несколько снимков экрана, вставьте их напрямую из буфера обмена или загрузите как изображения. Распознавание
           запускается автоматически. Экспорт в <code>.docx</code> — кнопка «Сохранить DOCX». По кнопке «Параметры
           сохранения» можно настроить содержимое файла.
         </p>
@@ -537,7 +537,7 @@ export default function App() {
         }}
       >
         <p>
-          Перетащите файлы сюда, выберите на диске или вставьте скриншот из буфера (
+          Перетащите файлы сюда, выберите на диске или вставьте снимок экрана из буфера (
           <kbd>Ctrl</kbd>+<kbd>V</kbd> / <kbd>⌘</kbd>+<kbd>V</kbd>)
         </p>
         <button type="button" className="btn btn-primary" onClick={() => document.getElementById("f")?.click()}>
@@ -714,7 +714,7 @@ export default function App() {
                   checked={saveOptions.insertScreenshots}
                   onChange={(e) => setSaveOptions((o) => ({ ...o, insertScreenshots: e.target.checked }))}
                 />
-                Вставлять исходные скриншоты
+                Вставлять исходные снимки экрана
               </label>
               <label className="field-row">
                 <input
@@ -722,7 +722,7 @@ export default function App() {
                   checked={saveOptions.insertFigures}
                   onChange={(e) => setSaveOptions((o) => ({ ...o, insertFigures: e.target.checked }))}
                 />
-                Вырезать картинки (вставлять вырезанные фрагменты в документ)
+                Найти изображения и вставить их в документ (возможно, затем потребуется обрезать изображение вручную)
               </label>
               <label className="field-row">
                 <input

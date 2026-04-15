@@ -7,6 +7,7 @@ from __future__ import annotations
 import io
 
 from docx import Document
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.table import Table
@@ -42,6 +43,29 @@ def _iter_all_tables_from_table(table: Table):
 def _all_tables(doc: Document):
     for t in doc.tables:
         yield from _iter_all_tables_from_table(t)
+
+
+def _looks_like_separator_line(text: str) -> bool:
+    """Строки-разделители вида ====== ... ====== (как в экспорте)."""
+    s = text.strip()
+    if len(s) < 8:
+        return False
+    if not s.startswith("=") or not s.endswith("="):
+        return False
+    if s.count("=") < 6:
+        return False
+    return True
+
+
+def center_separator_paragraphs(docx_bytes: bytes) -> bytes:
+    """Выравнивает по центру абзацы-разделители (только текст, начинается и кончается на =)."""
+    doc = Document(io.BytesIO(docx_bytes))
+    for p in doc.paragraphs:
+        if _looks_like_separator_line(p.text):
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    out = io.BytesIO()
+    doc.save(out)
+    return out.getvalue()
 
 
 def apply_black_table_borders(docx_bytes: bytes) -> bytes:

@@ -19,7 +19,8 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import Settings, get_settings
 from .docx_export import run_pandoc_docx
-from .docx_postprocess import apply_black_table_borders
+from .docx_postprocess import apply_black_table_borders, center_separator_paragraphs
+from .markdown_latex import preprocess_preserve_latex_markdown
 from .docx_text import extract_text_from_docx
 from .layout import analyze_layout
 from .markdown_merge import strip_markdown_images
@@ -212,13 +213,16 @@ async def convert_docx(
 
         cm = _parse_form_bool(convert_markdown, True)
         pl = _parse_form_bool(preserve_latex, False)
+        # При «сыром» markdown (без преобразования) формулы уже внутри блока кода — не трогаем $.
+        md_for_pandoc = preprocess_preserve_latex_markdown(markdown) if pl and cm else markdown
         docx_bytes = run_pandoc_docx(
             settings,
             session,
-            markdown_text=markdown,
+            markdown_text=md_for_pandoc,
             media_dir=media,
             preserve_latex=pl,
         )
+        docx_bytes = center_separator_paragraphs(docx_bytes)
         if cm:
             docx_bytes = apply_black_table_borders(docx_bytes)
         return Response(
