@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import Settings, get_settings
 from .docx_export import run_pandoc_docx
+from .docx_postprocess import apply_black_table_borders
 from .docx_text import extract_text_from_docx
 from .layout import analyze_layout
 from .markdown_merge import strip_markdown_images
@@ -131,7 +132,7 @@ async def process_image(
         mime = _guess_mime(file)
 
         try:
-            md_raw = await call_openrouter_vision(
+            md_raw, usage = await call_openrouter_vision(
                 settings,
                 image_mime=mime,
                 image_bytes=raw,
@@ -159,6 +160,7 @@ async def process_image(
                 "figures": figures_out,
                 "figure_count": figure_count,
                 "model": settings.openrouter_model,
+                "usage": usage,
             }
         )
     except HTTPException:
@@ -168,11 +170,22 @@ async def process_image(
         raise HTTPException(500, str(e)) from e
 
 
+def _parse_form_bool(raw: str | None, default: bool) -> bool:
+    if raw is None:
+        return default
+    s = str(raw).strip().lower()
+    if s == "":
+        return default
+    return s in ("1", "true", "yes", "on")
+
+
 @app.post("/api/convert-docx")
 async def convert_docx(
     settings: SettingsDep,
     markdown: str = Form(...),
     files: list[UploadFile] | None = File(None),
+    convert_markdown: str = Form("true"),
+    preserve_latex: str = Form("false"),
 ) -> Response:
     """
     Markdown + файлы изображений (имена fig_N.png) → DOCX через Pandoc.
@@ -197,7 +210,17 @@ async def convert_docx(
                 raise HTTPException(413, "Figure file too large")
             (media / base).write_bytes(data)
 
-        docx_bytes = run_pandoc_docx(settings, session, markdown_text=markdown, media_dir=media)
+        cm = _parse_form_bool(convert_markdown, True)
+        pl = _parse_form_bool(preserve_latex, False)
+        docx_bytes = run_pandoc_docx(
+            settings,
+            session,
+            markdown_text=markdown,
+            media_dir=media,
+            preserve_latex=pl,
+        )
+        if cm:
+            docx_bytes = apply_black_table_borders(docx_bytes)
         return Response(
             content=docx_bytes,
             media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",

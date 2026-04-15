@@ -18,6 +18,7 @@ def run_pandoc_docx(
     *,
     markdown_text: str,
     media_dir: Path | None,
+    preserve_latex: bool = False,
 ) -> bytes:
     """
     Пишет document.md в session, опционально копирует media, запускает pandoc.
@@ -36,11 +37,17 @@ def run_pandoc_docx(
             shutil.copytree(media_dir, dest_media)
 
     out_path = safe_join(session, "out.docx")
+    # preserve_latex: формат без tex_math_dollars — $...$ не превращаются в OMML Word.
+    if preserve_latex:
+        from_fmt = "markdown-tex_math_dollars+pipe_tables+raw_html"
+    else:
+        from_fmt = "markdown+tex_math_dollars+pipe_tables+raw_html"
+
     cmd = [
         "pandoc",
         str(md_path),
         "-f",
-        "markdown",
+        from_fmt,
         "-t",
         "docx",
         "-o",

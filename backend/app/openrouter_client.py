@@ -82,14 +82,37 @@ def _openrouter_error_message(status_code: int, body: str) -> str:
     return f"HTTP {status_code}: {body[:1500]}"
 
 
+def _parse_usage(data: dict[str, Any]) -> dict[str, int]:
+    raw = data.get("usage")
+    if not isinstance(raw, dict):
+        return {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    def n(key: str) -> int:
+        v = raw.get(key)
+        if isinstance(v, bool):
+            return 0
+        if isinstance(v, int):
+            return v
+        if isinstance(v, float):
+            return int(v)
+        return 0
+
+    pt = n("prompt_tokens")
+    ct = n("completion_tokens")
+    tt = n("total_tokens")
+    if tt == 0 and (pt or ct):
+        tt = pt + ct
+    return {"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": tt}
+
+
 async def call_openrouter_vision(
     settings: Settings,
     *,
     image_mime: str,
     image_bytes: bytes,
-) -> str:
+) -> tuple[str, dict[str, int]]:
     """
-    Отправляет полное изображение в chat/completions (без вырезок), возвращает Markdown-текст.
+    Отправляет полное изображение в chat/completions (без вырезок).
+    Возвращает (Markdown-текст, usage: prompt/completion/total tokens).
     """
     if not settings.openrouter_api_key:
         raise RuntimeError("OPENROUTER_API_KEY is not set")
@@ -154,6 +177,6 @@ async def call_openrouter_vision(
             raise RuntimeError(
                 f"Пустой ответ модели (finish_reason={fr!r}). Полный ответ: {data!r}"
             )
-        return out
+        return out, _parse_usage(data)
     except (KeyError, IndexError, TypeError) as e:
         raise RuntimeError(f"Неожиданный ответ OpenRouter: {data!r}") from e

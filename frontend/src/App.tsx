@@ -1,7 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "./App.css";
 
 const API = "/api";
+
+/** $ / 1M токенов (вход / выход) — OpenRouter pricing. */
+const PRICE_IN_PER_M = 0.2;
+const PRICE_OUT_PER_M = 0.88;
 
 type ItemKind = "image" | "text" | "docx";
 
@@ -9,6 +13,11 @@ interface FigureInfo {
   index: number;
   filename: string;
   base64: string;
+}
+
+interface UsageChunk {
+  prompt_tokens?: number;
+  completion_tokens?: number;
 }
 
 interface DocItem {
@@ -20,12 +29,27 @@ interface DocItem {
   markdown?: string;
   figures?: FigureInfo[];
   error?: string;
-  /** Модель OpenRouter из ответа /process-image (для проверки) */
-  modelUsed?: string;
   textContent?: string;
-  /** Уже попало в последний экспорт docx/md */
-  docxIncluded: boolean;
+  /** Для изображений: участвует в «сохранить выделенное». */
+  selected: boolean;
 }
+
+interface SaveDocOptions {
+  saveAll: boolean;
+  insertScreenshots: boolean;
+  insertFigures: boolean;
+  convertMarkdown: boolean;
+  /** true — оставить формулы как LaTeX-текст; false — преобразовать в формулы Word (Pandoc). */
+  latexFormulas: boolean;
+}
+
+const defaultSaveOptions: SaveDocOptions = {
+  saveAll: true,
+  insertScreenshots: true,
+  insertFigures: true,
+  convertMarkdown: true,
+  latexFormulas: false,
+};
 
 /** Текст поля `detail` из FastAPI (строка или список ошибок валидации). */
 function formatFastApiDetail(detail: unknown): string {
@@ -97,9 +121,7 @@ function filesFromClipboard(e: ClipboardEvent): File[] {
     const name = hasSensibleName ? blob.name : `paste-${stamp}-${imageIdx}.${ext}`;
     imageIdx += 1;
 
-    out.push(
-      hasSensibleName ? blob : new File([blob], name, { type: blob.type || mime })
-    );
+    out.push(hasSensibleName ? blob : new File([blob], name, { type: blob.type || mime }));
   }
 
   return out;
@@ -120,6 +142,27 @@ function stripMarkdownImages(md: string): string {
   return s.replace(/\n{3,}/g, "\n\n").trim();
 }
 
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/** Разделитель по центру (HTML для Pandoc). */
+function sepCenter(line: string): string {
+  return `\n\n<p style="text-align:center"><strong>${escapeHtml(line)}</strong></p>\n\n`;
+}
+
+/** Распознанный текст как «сырой» markdown (блок кода), чтобы Pandoc не форматировал. */
+function wrapMarkdownAsLiteral(md: string): string {
+  const body = md.replace(/\r\n/g, "\n");
+  let n = 3;
+  let fence = "`".repeat(n);
+  while (body.includes(fence)) {
+    n += 1;
+    fence = "`".repeat(n);
+  }
+  return `\n\n${fence}text\n${body}\n${fence}\n\n`;
+}
+
 function base64ToBlob(b64: string): Blob {
   const bin = atob(b64);
   const arr = new Uint8Array(bin.length);
@@ -127,64 +170,76 @@ function base64ToBlob(b64: string): Blob {
   return new Blob([arr], { type: "image/png" });
 }
 
+function singleMdDownloadName(original: string): string {
+  const i = original.lastIndexOf(".");
+  const base = i > 0 ? original.slice(0, i) : original;
+  return `${base || "скриншот"}.md`;
+}
+
 export default function App() {
   const [items, setItems] = useState<DocItem[]>([]);
   const [drag, setDrag] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [totalJobs, setTotalJobs] = useState(0);
-  const [modal, setModal] = useState<"docx" | "md" | null>(null);
-  const [hasExportedOnce, setHasExportedOnce] = useState(false);
-  /** Сводка ошибок последнего прогона «Распознать» (OpenRouter / сервер). */
+  const [savingDocx, setSavingDocx] = useState(false);
+  const [recognizingId, setRecognizingId] = useState<string | null>(null);
+  const [saveOptions, setSaveOptions] = useState<SaveDocOptions>(defaultSaveOptions);
+  const [saveParamsOpen, setSaveParamsOpen] = useState(false);
+  const [incompleteOpen, setIncompleteOpen] = useState(false);
+  const [expandedMd, setExpandedMd] = useState<Record<string, boolean>>({});
   const [recognizeSummaryError, setRecognizeSummaryError] = useState<string | null>(null);
+  const [usageTotals, setUsageTotals] = useState({ prompt: 0, completion: 0 });
+
+  const busyRecognize = useRef(false);
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const revokePreview = useCallback((it: DocItem) => {
     if (it.previewUrl) URL.revokeObjectURL(it.previewUrl);
   }, []);
 
-  const addFiles = useCallback(
-    async (fileList: FileList | File[]) => {
-      const arr = Array.from(fileList);
-      const next: DocItem[] = [];
-      for (const file of arr) {
-        const kind = kindFromFile(file);
-        if (!kind) continue;
-        const id = newId();
-        if (kind === "image") {
-          next.push({
-            id,
-            kind,
-            file,
-            previewUrl: URL.createObjectURL(file),
-            processed: false,
-            docxIncluded: false,
-          });
-        } else if (kind === "text") {
-          const text = await file.text();
-          next.push({
-            id,
-            kind,
-            file,
-            processed: true,
-            textContent: text,
-            docxIncluded: false,
-          });
-        } else {
-          next.push({
-            id,
-            kind,
-            file,
-            processed: false,
-            docxIncluded: false,
-          });
-        }
+  const addFiles = useCallback(async (fileList: FileList | File[]) => {
+    const arr = Array.from(fileList);
+    const next: DocItem[] = [];
+    for (const file of arr) {
+      const kind = kindFromFile(file);
+      if (!kind) continue;
+      const id = newId();
+      if (kind === "image") {
+        next.push({
+          id,
+          kind,
+          file,
+          previewUrl: URL.createObjectURL(file),
+          processed: false,
+          selected: true,
+        });
+      } else if (kind === "text") {
+        const text = await file.text();
+        next.push({
+          id,
+          kind,
+          file,
+          processed: true,
+          textContent: text,
+          selected: true,
+        });
+      } else {
+        next.push({
+          id,
+          kind,
+          file,
+          processed: false,
+          selected: true,
+        });
       }
-      setItems((prev) => [...prev, ...next]);
-    },
-    []
-  );
+    }
+    setItems((prev) => [...prev, ...next]);
+  }, []);
 
-  /** Возвращает список с заполненным textContent для .docx (без гонки с setState). */
   const extractDocxTexts = useCallback(async (list: DocItem[]): Promise<DocItem[]> => {
     let out = [...list];
     const need = out.filter((i) => i.kind === "docx" && i.textContent === undefined);
@@ -205,9 +260,7 @@ export default function App() {
         throw new Error(msg ? `[HTTP ${r.status}] ${msg}` : `[HTTP ${r.status}] ${raw.slice(0, 800)}`);
       }
       const data = parsed as { text: string };
-      out = out.map((x) =>
-        x.id === it.id ? { ...x, textContent: data.text, processed: true } : x
-      );
+      out = out.map((x) => (x.id === it.id ? { ...x, textContent: data.text, processed: true } : x));
     }
     setItems(out);
     return out;
@@ -219,21 +272,36 @@ export default function App() {
       if (t) revokePreview(t);
       return prev.filter((x) => x.id !== id);
     });
+    setExpandedMd((m) => {
+      const c = { ...m };
+      delete c[id];
+      return c;
+    });
   };
 
-  const recognize = async () => {
-    const targets = items.filter((i) => i.kind === "image" && !i.processed);
-    if (targets.length === 0) return;
-    setBusy(true);
+  const toggleSelected = (id: string) => {
+    setItems((prev) =>
+      prev.map((x) => (x.id === id && x.kind === "image" ? { ...x, selected: !x.selected } : x))
+    );
+  };
+
+  const toggleExpandMd = (id: string) => {
+    setExpandedMd((m) => ({ ...m, [id]: !m[id] }));
+  };
+
+  /** Последовательное распознавание одного изображения за раз. */
+  useEffect(() => {
+    const next = items.find((i) => i.kind === "image" && !i.processed && !i.error);
+    if (!next || busyRecognize.current) return;
+
+    busyRecognize.current = true;
+    setRecognizingId(next.id);
     setRecognizeSummaryError(null);
-    setItems((prev) => prev.map((x) => ({ ...x, error: undefined })));
-    setTotalJobs(targets.length);
-    setProgress(0);
-    let done = 0;
-    let lastFailedMsg: string | null = null;
-    for (const it of targets) {
-      const fd = new FormData();
-      fd.append("file", it.file);
+
+    const fd = new FormData();
+    fd.append("file", next.file);
+
+    void (async () => {
       try {
         const r = await fetch(`${API}/process-image`, { method: "POST", body: fd });
         const raw = await r.text();
@@ -255,83 +323,92 @@ export default function App() {
         const payload = data as {
           markdown: string;
           figures: FigureInfo[];
-          model?: string;
+          usage?: UsageChunk;
         };
-        setItems((prev) =>
-          prev.map((x) =>
-            x.id === it.id
-              ? {
-                  ...x,
-                  processed: true,
-                  markdown: payload.markdown,
-                  figures: payload.figures,
-                  modelUsed: payload.model,
-                  error: undefined,
-                }
-              : x
-          )
-        );
+        if (payload.usage) {
+          const pt = Number(payload.usage.prompt_tokens) || 0;
+          const ct = Number(payload.usage.completion_tokens) || 0;
+          if (mountedRef.current) {
+            setUsageTotals((u) => ({ prompt: u.prompt + pt, completion: u.completion + ct }));
+          }
+        }
+        if (mountedRef.current) {
+          setItems((prev) =>
+            prev.map((x) =>
+              x.id === next.id
+                ? {
+                    ...x,
+                    processed: true,
+                    markdown: payload.markdown,
+                    figures: payload.figures,
+                    error: undefined,
+                  }
+                : x
+            )
+          );
+        }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        lastFailedMsg = msg;
-        setItems((prev) =>
-          prev.map((x) => (x.id === it.id ? { ...x, error: msg, processed: false } : x))
-        );
+        if (mountedRef.current) {
+          setRecognizeSummaryError(
+            "При распознавании были ошибки. Подробности у соответствующих файлов ниже. Последняя: " + msg
+          );
+          setItems((prev) => prev.map((x) => (x.id === next.id ? { ...x, error: msg, processed: false } : x)));
+        }
+      } finally {
+        busyRecognize.current = false;
+        if (mountedRef.current) setRecognizingId(null);
       }
-      done += 1;
-      setProgress(done);
-    }
-    if (lastFailedMsg) {
-      setRecognizeSummaryError(
-        "При распознавании были ошибки. Подробности у соответствующих файлов ниже. Последняя: " +
-          lastFailedMsg
-      );
-    }
-    setBusy(false);
-  };
+    })();
+  }, [items]);
 
   const buildSections = (
     list: DocItem[],
-    onlyNew: boolean
+    opts: SaveDocOptions
   ): { markdown: string; blobs: { name: string; blob: Blob }[] } => {
     const blobs: { name: string; blob: Blob }[] = [];
     const parts: string[] = [];
-    let shot = 0;
+    let shotCounter = 0;
+
+    const includeImage = (it: DocItem) => {
+      if (it.kind !== "image" || !it.processed) return false;
+      if (opts.saveAll) return true;
+      return it.selected;
+    };
 
     for (const it of list) {
-      if (onlyNew && it.docxIncluded) continue;
-
       if (it.kind === "image") {
-        if (!it.processed) continue;
-        shot += 1;
+        if (!includeImage(it)) continue;
+        shotCounter += 1;
+        const n = shotCounter;
         const ext = extOf(it.file.name) || "png";
         const origName = `original_${it.id}.${ext}`;
 
-        parts.push(`\n\n---- скрин ${shot} - исходник ----\n\n`);
-        parts.push(`![Исходное изображение](media/${origName})\n\n`);
-        parts.push(`---- распознанный текст ------\n\n`);
-        parts.push(stripMarkdownImages(it.markdown || ""));
-        parts.push(`\n\n---- вырезанные картинки ----\n\n`);
-        if (it.figures && it.figures.length > 0) {
-          for (const f of it.figures) {
-            parts.push(
-              `![Вырезанный фрагмент ${f.index}](media/${it.id}_fig_${f.index}.png)\n\n`
-            );
-          }
-        } else {
-          parts.push(`_Вырезанных фрагментов не найдено._\n\n`);
+        if (opts.insertScreenshots) {
+          parts.push(sepCenter(`========== скриншот ${n} ==========`));
+          parts.push(`![скриншот ${n}](media/${origName})\n\n`);
+          blobs.push({ name: origName, blob: it.file });
         }
 
-        blobs.push({ name: origName, blob: it.file });
-        if (it.figures) {
+        if (opts.insertFigures && it.figures && it.figures.length > 0) {
+          parts.push(sepCenter(`=== фрагменты изображений ===`));
           for (const f of it.figures) {
+            parts.push(`![фрагмент ${f.index}](media/${it.id}_fig_${f.index}.png)\n\n`);
+            parts.push(sepCenter(`фрагмент ${f.index}`));
             blobs.push({
               name: `${it.id}_fig_${f.index}.png`,
               blob: base64ToBlob(f.base64),
             });
           }
         }
-      } else if (it.kind === "text" && it.textContent !== undefined) {
+
+        const rawMd = stripMarkdownImages(it.markdown || "");
+        parts.push(sepCenter(`=== текст скриншота ${n} ===`));
+        parts.push(opts.convertMarkdown ? `${rawMd}\n\n` : wrapMarkdownAsLiteral(rawMd));
+        continue;
+      }
+
+      if (it.kind === "text" && it.textContent !== undefined) {
         parts.push(`\n\n========= файл: ${it.file.name} =========\n\n`);
         parts.push(it.textContent);
       } else if (it.kind === "docx" && it.textContent !== undefined) {
@@ -343,15 +420,17 @@ export default function App() {
     return { markdown: parts.join("").trim() + "\n", blobs };
   };
 
-  const runDocxExport = async (onlyNew: boolean) => {
+  const runDocxExport = async () => {
     const fresh = await extractDocxTexts(items);
-    const { markdown, blobs } = buildSections(fresh, onlyNew);
+    const { markdown, blobs } = buildSections(fresh, saveOptions);
     if (!markdown.trim()) {
       alert("Нет содержимого для сохранения.");
       return;
     }
     const fd = new FormData();
     fd.append("markdown", markdown);
+    fd.append("convert_markdown", String(saveOptions.convertMarkdown));
+    fd.append("preserve_latex", String(saveOptions.latexFormulas));
     for (const b of blobs) {
       fd.append("files", b.blob, b.name);
     }
@@ -369,81 +448,53 @@ export default function App() {
     a.download = "document.docx";
     a.click();
     URL.revokeObjectURL(a.href);
-
-    setItems((prev) =>
-      prev.map((x) => {
-        if (onlyNew) {
-          if (!x.docxIncluded && (x.markdown || x.textContent)) return { ...x, docxIncluded: true };
-          return x;
-        }
-        return { ...x, docxIncluded: true };
-      })
-    );
-    setHasExportedOnce(true);
-  };
-
-  const runMdExport = async (onlyNew: boolean) => {
-    const fresh = await extractDocxTexts(items);
-    const { markdown } = buildSections(fresh, onlyNew);
-    if (!markdown.trim()) {
-      alert("Нет содержимого для сохранения.");
-      return;
-    }
-    const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = "document.md";
-    a.click();
-    URL.revokeObjectURL(a.href);
-
-    setItems((prev) =>
-      prev.map((x) => {
-        if (onlyNew) {
-          if (!x.docxIncluded && (x.markdown || x.textContent)) return { ...x, docxIncluded: true };
-          return x;
-        }
-        return { ...x, docxIncluded: true };
-      })
-    );
-    setHasExportedOnce(true);
   };
 
   const onSaveDocx = async () => {
-    if (hasExportedOnce) {
-      setModal("docx");
-      return;
-    }
-    setBusy(true);
+    setSavingDocx(true);
     try {
-      await runDocxExport(false);
+      await runDocxExport();
     } catch (e) {
       alert(e instanceof Error ? e.message : String(e));
     } finally {
-      setBusy(false);
+      setSavingDocx(false);
     }
   };
 
-  const onSaveMd = () => {
-    if (hasExportedOnce) {
-      setModal("md");
-      return;
-    }
-    void runMdExport(false).catch((e) => alert(String(e)));
-  };
-
-  const pendingImages = useMemo(
-    () => items.filter((i) => i.kind === "image" && !i.processed).length,
+  const recognitionIncomplete = useMemo(
+    () => items.some((i) => i.kind === "image" && !i.processed && !i.error),
     [items]
   );
+
+  const docxBlocked = recognitionIncomplete || items.length === 0 || savingDocx;
+
+  const saveOneMarkdown = (it: DocItem) => {
+    const md = it.markdown || "";
+    const blob = new Blob([md], { type: "text/markdown;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = singleMdDownloadName(it.file.name);
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+
+  const copyMarkdown = async (md: string) => {
+    try {
+      await navigator.clipboard.writeText(md);
+    } catch {
+      alert("Не удалось скопировать в буфер обмена.");
+    }
+  };
 
   const clearAll = () => {
     items.forEach(revokePreview);
     setItems([]);
-    setHasExportedOnce(false);
-    setProgress(0);
-    setTotalJobs(0);
     setRecognizeSummaryError(null);
+    setExpandedMd({});
   };
+
+  const costUsd =
+    (usageTotals.prompt * PRICE_IN_PER_M + usageTotals.completion * PRICE_OUT_PER_M) / 1_000_000;
 
   /** Вставка скриншотов Ctrl+V с любой точки страницы (кроме полей ввода). */
   useEffect(() => {
@@ -463,8 +514,9 @@ export default function App() {
       <header className="app-header">
         <h1>Перевод скриншотов в Word</h1>
         <p className="sub">
-          Сделайте один или несколько скриншотов, вставьте их из буфера обмена или загрузите как изображения. Они будут распознаны и экспортированы в файл формата{" "}
-          <code>.docx</code>. По кнопке {" "} <code>Параметры сохранения</code> можно настроить содержимое экспортируемого файла.
+          Сделайте один или несколько скриншотов, вставьте их из буфера обмена или загрузите как изображения. Распознавание
+          запускается автоматически. Экспорт в <code>.docx</code> — кнопка «Сохранить DOCX». По кнопке «Параметры
+          сохранения» можно настроить содержимое файла.
         </p>
       </header>
 
@@ -505,14 +557,23 @@ export default function App() {
 
       <div className="actions-wrap">
         <div className="actions">
-          <button type="button" className="btn btn-primary" disabled={busy || pendingImages === 0} onClick={() => void recognize()}>
-            Распознать
-          </button>
-          <button type="button" className="btn btn-secondary" disabled={busy || items.length === 0} onClick={() => void onSaveDocx()}>
+          <button
+            type="button"
+            className={`btn btn-secondary ${docxBlocked ? "btn-looks-disabled" : ""}`}
+            aria-disabled={docxBlocked}
+            onClick={() => {
+              if (items.length === 0 || savingDocx) return;
+              if (recognitionIncomplete) {
+                setIncompleteOpen(true);
+                return;
+              }
+              void onSaveDocx();
+            }}
+          >
             Сохранить DOCX
           </button>
-          <button type="button" className="btn btn-secondary" disabled={items.length === 0} onClick={() => onSaveMd()}>
-            Сохранить Markdown
+          <button type="button" className="btn btn-secondary" onClick={() => setSaveParamsOpen(true)}>
+            Параметры сохранения
           </button>
           <button type="button" className="btn btn-danger" onClick={clearAll}>
             Очистить всё
@@ -531,91 +592,176 @@ export default function App() {
 
       <div className="file-list">
         {items.map((it) => (
-          <div key={it.id} className={`file-row ${it.error ? "file-row-error" : ""}`}>
-            {it.kind === "image" && it.previewUrl ? (
-              <img className="preview" src={it.previewUrl} alt="" />
-            ) : (
-              <span style={{ fontSize: "2rem" }} aria-hidden>
-                {it.kind === "docx" ? "📄" : "📃"}
-              </span>
-            )}
-            <div className="file-meta">
-              <div className="name">{it.file.name}</div>
-              <div className="status">
-                {it.kind === "image" &&
-                  (it.processed ? "Распознано" : "Новое изображение")}
-                {it.kind === "text" && "Текст"}
-                {it.kind === "docx" && (it.textContent !== undefined ? "Текст извлечён" : "Ожидает извлечения")}
-                {it.kind === "image" && it.processed && it.modelUsed && (
-                  <span className="model-used"> · Модель: {it.modelUsed}</span>
+          <div
+            key={it.id}
+            className={`file-row-outer ${it.kind === "image" && it.processed && !it.error && expandedMd[it.id] ? "is-open" : ""}`}
+          >
+            <div className={`file-row ${it.error ? "file-row-error" : ""}`}>
+              {it.kind === "image" ? (
+                <label className="row-check-wrap" title="Участвует в сохранении при режиме «выделенное»">
+                  <input type="checkbox" checked={it.selected} onChange={() => toggleSelected(it.id)} />
+                </label>
+              ) : (
+                <span className="row-check-spacer" aria-hidden />
+              )}
+              {it.kind === "image" && it.previewUrl ? (
+                <img className="preview" src={it.previewUrl} alt="" />
+              ) : (
+                <span className="file-icon-emoji" aria-hidden>
+                  {it.kind === "docx" ? "📄" : "📃"}
+                </span>
+              )}
+              <div className="file-meta">
+                <div className="name">{it.file.name}</div>
+                <div className="status">
+                  {it.kind === "image" &&
+                    (it.error
+                      ? "Ошибка распознавания"
+                      : it.processed
+                        ? "Распознано"
+                        : recognizingId === it.id
+                          ? "Распознавание…"
+                          : "В очереди…")}
+                  {it.kind === "text" && "Текст"}
+                  {it.kind === "docx" && (it.textContent !== undefined ? "Текст извлечён" : "Ожидает извлечения")}
+                </div>
+                {it.error && (
+                  <pre className="error-detail" title={it.error}>
+                    {it.error}
+                  </pre>
                 )}
               </div>
-              {it.error && (
-                <pre className="error-detail" title={it.error}>
-                  {it.error}
-                </pre>
+              {it.kind === "image" && recognizingId === it.id && (
+                <span className="spinner" aria-label="Идёт распознавание" />
               )}
+              {it.kind === "image" && it.processed && !it.error && (
+                <button
+                  type="button"
+                  className={`chevron-toggle ${expandedMd[it.id] ? "open" : ""}`}
+                  aria-expanded={!!expandedMd[it.id]}
+                  aria-label={expandedMd[it.id] ? "Свернуть текст" : "Показать распознанный текст"}
+                  onClick={() => toggleExpandMd(it.id)}
+                />
+              )}
+              <button type="button" className="btn btn-row-delete" onClick={() => removeItem(it.id)}>
+                Удалить
+              </button>
             </div>
-            <button type="button" className="btn" onClick={() => removeItem(it.id)}>
-              Удалить
-            </button>
+
+            {it.kind === "image" && it.processed && !it.error && expandedMd[it.id] && (
+              <div className="md-pocket">
+                <div className="md-pocket-toolbar">
+                  <button type="button" className="btn btn-small" onClick={() => saveOneMarkdown(it)}>
+                    Сохранить
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-small btn-icon"
+                    title="Копировать в буфер обмена"
+                    aria-label="Копировать в буфер обмена"
+                    onClick={() => void copyMarkdown(it.markdown || "")}
+                  >
+                    ⧉
+                  </button>
+                </div>
+                <pre className="md-pocket-body">{it.markdown || ""}</pre>
+              </div>
+            )}
           </div>
         ))}
       </div>
 
-      {busy && totalJobs > 0 && (
-        <div className="progress-wrap">
-          <label>Распознавание: {progress} / {totalJobs}</label>
-          <div className="progress-bar" role="progressbar" aria-valuenow={progress} aria-valuemin={0} aria-valuemax={totalJobs}>
-            <div className="progress-bar-fill" style={{ width: `${(progress / totalJobs) * 100}%` }} />
+      <div className="cost-widget" title="Сумма по ответам API за эту сессию страницы">
+        <span className="cost-label">Затраты (сессия)</span>
+        <span className="cost-line">
+          in {usageTotals.prompt.toLocaleString("ru-RU")} tok · out {usageTotals.completion.toLocaleString("ru-RU")} tok
+        </span>
+        <span className="cost-line cost-usd">≈ {costUsd < 0.0001 ? "< 0.0001" : costUsd.toFixed(4)} USD</span>
+      </div>
+
+      {saveParamsOpen && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onClick={(e) => e.target === e.currentTarget && setSaveParamsOpen(false)}
+        >
+          <div className="modal modal-wide">
+            <h3>Параметры сохранения</h3>
+            <div className="save-params-form">
+              <div className="field-row field-row-radio">
+                <label className="radio-inline">
+                  <input
+                    type="radio"
+                    name="save-scope"
+                    checked={saveOptions.saveAll}
+                    onChange={() => setSaveOptions((o) => ({ ...o, saveAll: true }))}
+                  />
+                  Сохранить всё
+                </label>
+                <label className="radio-inline">
+                  <input
+                    type="radio"
+                    name="save-scope"
+                    checked={!saveOptions.saveAll}
+                    onChange={() => setSaveOptions((o) => ({ ...o, saveAll: false }))}
+                  />
+                  Сохранить выделенное
+                </label>
+              </div>
+              <label className="field-row">
+                <input
+                  type="checkbox"
+                  checked={saveOptions.insertScreenshots}
+                  onChange={(e) => setSaveOptions((o) => ({ ...o, insertScreenshots: e.target.checked }))}
+                />
+                Вставлять исходные скриншоты
+              </label>
+              <label className="field-row">
+                <input
+                  type="checkbox"
+                  checked={saveOptions.insertFigures}
+                  onChange={(e) => setSaveOptions((o) => ({ ...o, insertFigures: e.target.checked }))}
+                />
+                Вырезать картинки (вставлять вырезанные фрагменты в документ)
+              </label>
+              <label className="field-row">
+                <input
+                  type="checkbox"
+                  checked={saveOptions.convertMarkdown}
+                  onChange={(e) => setSaveOptions((o) => ({ ...o, convertMarkdown: e.target.checked }))}
+                />
+                Преобразовать Markdown в форматирование Word
+              </label>
+              <label className="field-row">
+                <input
+                  type="checkbox"
+                  checked={saveOptions.latexFormulas}
+                  onChange={(e) => setSaveOptions((o) => ({ ...o, latexFormulas: e.target.checked }))}
+                />
+                Формулы LaTeX (не преобразовывать в формулы Word, оставить как текст)
+              </label>
+            </div>
+            <div className="actions">
+              <button type="button" className="btn btn-primary" onClick={() => setSaveParamsOpen(false)}>
+                Готово
+              </button>
+            </div>
           </div>
         </div>
       )}
 
-      {modal && (
+      {incompleteOpen && (
         <div
           className="modal-backdrop"
           role="presentation"
-          onClick={(e) => e.target === e.currentTarget && setModal(null)}
+          onClick={(e) => e.target === e.currentTarget && setIncompleteOpen(false)}
         >
           <div className="modal">
-            <h3>Сохранить всё или только новое?</h3>
-            <p style={{ margin: 0, fontSize: "0.9rem", color: "#444" }}>
-              «Только новое» — контент, который ещё не попадал в предыдущий экспорт.
-            </p>
+            <h3>Распознавание не завершено</h3>
+            <p className="modal-note">Дождитесь окончания распознавания всех изображений, затем сохраните документ.</p>
             <div className="actions">
-              <button type="button" className="btn" onClick={() => setModal(null)}>
-                Отмена
-              </button>
-              <button
-                type="button"
-                className="btn"
-                onClick={() => {
-                  setModal(null);
-                  if (modal === "docx") {
-                    setBusy(true);
-                    void runDocxExport(true)
-                      .catch((e) => alert(String(e)))
-                      .finally(() => setBusy(false));
-                  } else void runMdExport(true).catch((e) => alert(String(e)));
-                }}
-              >
-                Только новое
-              </button>
-              <button
-                type="button"
-                className="btn btn-primary"
-                onClick={() => {
-                  setModal(null);
-                  if (modal === "docx") {
-                    setBusy(true);
-                    void runDocxExport(false)
-                      .catch((e) => alert(String(e)))
-                      .finally(() => setBusy(false));
-                  } else void runMdExport(false).catch((e) => alert(String(e)));
-                }}
-              >
-                Всё
+              <button type="button" className="btn btn-primary" onClick={() => setIncompleteOpen(false)}>
+                ОК
               </button>
             </div>
           </div>
