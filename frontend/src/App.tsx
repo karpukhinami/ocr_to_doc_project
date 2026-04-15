@@ -139,16 +139,16 @@ function isEditableTarget(el: EventTarget | null): boolean {
 function stripMarkdownImages(md: string): string {
   let s = md.replace(/!\[[^\]]*\]\([^)]*\)/g, "");
   s = s.replace(/<img\b[^>]*>/gi, "");
-  return s.replace(/\n{3,}/g, "\n\n").trim();
+  return s.trim();
 }
 
 function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-/** Разделитель по центру (HTML для Pandoc). */
+/** Разделитель по центру (HTML для Pandoc; в DOCX цвет дублируется постобработкой). */
 function sepCenter(line: string): string {
-  return `\n\n<p style="text-align:center"><strong>${escapeHtml(line)}</strong></p>\n\n`;
+  return `\n\n<p style="text-align:center;color:#9ea4e8"><strong style="color:#9ea4e8">${escapeHtml(line)}</strong></p>\n\n`;
 }
 
 /** Распознанный текст как «сырой» markdown (блок кода), чтобы Pandoc не форматировал. */
@@ -390,29 +390,28 @@ export default function App() {
           blobs.push({ name: origName, blob: it.file });
         }
 
+        const rawMd = stripMarkdownImages(it.markdown || "");
+        parts.push(sepCenter(`========== текст снимка экрана ${n} ==========`));
+        parts.push(opts.convertMarkdown ? `${rawMd}\n\n` : wrapMarkdownAsLiteral(rawMd));
+
         if (opts.insertFigures && it.figures && it.figures.length > 0) {
           parts.push(sepCenter(`========== фрагменты изображений ==========`));
           for (const f of it.figures) {
-            parts.push(`![фрагмент ${f.index}](media/${it.id}_fig_${f.index}.png)\n\n`);
-            parts.push(sepCenter(`фрагмент ${f.index}`));
+            parts.push(`![](media/${it.id}_fig_${f.index}.png)\n\n`);
             blobs.push({
               name: `${it.id}_fig_${f.index}.png`,
               blob: base64ToBlob(f.base64),
             });
           }
         }
-
-        const rawMd = stripMarkdownImages(it.markdown || "");
-        parts.push(sepCenter(`========== текст снимка экрана ${n} ==========`));
-        parts.push(opts.convertMarkdown ? `${rawMd}\n\n` : wrapMarkdownAsLiteral(rawMd));
         continue;
       }
 
       if (it.kind === "text" && it.textContent !== undefined) {
-        parts.push(`\n\n========== файл: ${it.file.name} ==========\n\n`);
+        parts.push(sepCenter(`========== файл: ${it.file.name} ==========`));
         parts.push(it.textContent);
       } else if (it.kind === "docx" && it.textContent !== undefined) {
-        parts.push(`\n\n========== файл: ${it.file.name} ==========\n\n`);
+        parts.push(sepCenter(`========== файл: ${it.file.name} ==========`));
         parts.push(it.textContent);
       }
     }

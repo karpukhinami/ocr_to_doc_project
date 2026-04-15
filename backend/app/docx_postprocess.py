@@ -10,7 +10,11 @@ from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
+from docx.shared import RGBColor
 from docx.table import Table
+
+# Как на фронте --lavender-deep
+_SEPARATOR_LAVENDER = RGBColor(0x9E, 0xA4, 0xE8)
 
 
 def _set_table_borders(table: Table) -> None:
@@ -57,12 +61,14 @@ def _looks_like_separator_line(text: str) -> bool:
     return True
 
 
-def center_separator_paragraphs(docx_bytes: bytes) -> bytes:
-    """Выравнивает по центру абзацы-разделители (только текст, начинается и кончается на =)."""
+def style_separator_paragraphs(docx_bytes: bytes) -> bytes:
+    """Центрирование и сиреневый цвет текста у абзацев-разделителей (строки из =…=)."""
     doc = Document(io.BytesIO(docx_bytes))
     for p in doc.paragraphs:
         if _looks_like_separator_line(p.text):
             p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            for run in p.runs:
+                run.font.color.rgb = _SEPARATOR_LAVENDER
     out = io.BytesIO()
     doc.save(out)
     return out.getvalue()
