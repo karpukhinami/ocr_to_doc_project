@@ -20,7 +20,6 @@ from fastapi.staticfiles import StaticFiles
 from .config import Settings, get_settings
 from .docx_export import run_pandoc_docx
 from .docx_postprocess import apply_black_table_borders, style_separator_paragraphs
-from .markdown_latex import normalize_display_math_blank_lines
 from .docx_text import extract_text_from_docx
 from .layout import analyze_layout
 from .markdown_merge import strip_markdown_images
@@ -213,12 +212,10 @@ async def convert_docx(
 
         cm = _parse_form_bool(convert_markdown, True)
         pl = _parse_form_bool(preserve_latex, False)
-        # Только схлопывание пустых абзацев внутри $$...$$; сами $ и команды LaTeX не трогаем.
-        md_for_pandoc = normalize_display_math_blank_lines(markdown) if pl else markdown
         docx_bytes = run_pandoc_docx(
             settings,
             session,
-            markdown_text=md_for_pandoc,
+            markdown_text=markdown,
             media_dir=media,
             preserve_latex=pl,
         )

@@ -148,7 +148,7 @@ function escapeHtml(s: string): string {
 
 /** Разделитель по центру (HTML для Pandoc; в DOCX цвет дублируется постобработкой). */
 function sepCenter(line: string): string {
-  return `\n\n<p style="text-align:center;color:#9ea4e8"><strong style="color:#9ea4e8">${escapeHtml(line)}</strong></p>\n\n`;
+  return `\n\n<p style="text-align:center;color:#7d0a8f"><strong style="color:#7d0a8f">${escapeHtml(line)}</strong></p>\n\n`;
 }
 
 /** Распознанный текст как «сырой» markdown (блок кода), чтобы Pandoc не форматировал. */
@@ -161,6 +161,56 @@ function wrapMarkdownAsLiteral(md: string): string {
     fence = "`".repeat(n);
   }
   return `\n\n${fence}text\n${body}\n${fence}\n\n`;
+}
+
+/** Блок кода с динамической длиной ограждения, чтобы содержимое не «сломало» fence. */
+function fenceBlock(body: string): string {
+  let n = 3;
+  let fence = "`".repeat(n);
+  while (body.includes(fence)) {
+    n += 1;
+    fence = "`".repeat(n);
+  }
+  return `\n\n${fence}\n${body}\n${fence}\n\n`;
+}
+
+/** Инлайн-код с динамическими backticks (Pandoc воспринимает как литерал). */
+function inlineCodeFrom(content: string): string {
+  let n = 1;
+  let fence = "`".repeat(n);
+  while (content.includes(fence)) {
+    n += 1;
+    fence = "`".repeat(n);
+  }
+  const pad = n === 1 ? "" : " ";
+  return `${fence}${pad}${content}${pad}${fence}`;
+}
+
+/**
+ * Режим «LaTeX как текст» + преобразование Markdown: оборачивает $$...$$ и $...$
+ * в кодовые блоки/инлайн-код, чтобы Pandoc не съедал \\, {} и т.д.
+ * Внутри $$ схлопываются только лишние пустые строки.
+ */
+function prepareLatexSafeMarkdown(md: string): string {
+  const segments = md.split(/(\$\$[\s\S]*?\$\$)/g);
+  return segments
+    .map((seg, idx) => {
+      if (idx % 2 === 1) {
+        const m = /^\$\$([\s\S]*)\$\$$/.exec(seg);
+        if (!m) return seg;
+        const inner = m[1].replace(/\r\n/g, "\n").replace(/\n\s*\n+/g, "\n").trim();
+        return fenceBlock(`$$${inner}$$`);
+      }
+      return wrapInlineDollarMath(seg);
+    })
+    .join("");
+}
+
+function wrapInlineDollarMath(part: string): string {
+  return part.replace(/(?<!\$)\$(?!\$)((?:[^$\n\\]|\\.)+?)\$(?!\$)/g, (full, inner: string) => {
+    if (/^[\d\s.,]+$/.test(inner.trim())) return full;
+    return inlineCodeFrom(`$${inner}$`);
+  });
 }
 
 function base64ToBlob(b64: string): Blob {
@@ -384,13 +434,17 @@ export default function App() {
         const ext = extOf(it.file.name) || "png";
         const origName = `original_${it.id}.${ext}`;
 
+        // Порядок в документе: (1) исходный снимок (2) распознанный текст (3) фрагменты — только после текста.
         if (opts.insertScreenshots) {
           parts.push(sepCenter(`========== снимок экрана ${n} ==========`));
           parts.push(`![](media/${origName})\n\n`);
           blobs.push({ name: origName, blob: it.file });
         }
 
-        const rawMd = stripMarkdownImages(it.markdown || "");
+        let rawMd = stripMarkdownImages(it.markdown || "");
+        if (opts.latexFormulas && opts.convertMarkdown) {
+          rawMd = prepareLatexSafeMarkdown(rawMd);
+        }
         parts.push(sepCenter(`========== текст снимка экрана ${n} ==========`));
         parts.push(opts.convertMarkdown ? `${rawMd}\n\n` : wrapMarkdownAsLiteral(rawMd));
 
