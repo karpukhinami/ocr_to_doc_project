@@ -79,6 +79,12 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/api/config")
+def public_config(settings: SettingsDep) -> dict[str, bool]:
+    """Публичные флаги UI (без секретов), задаются переменными окружения на Render."""
+    return {"show_cost_widget": settings.show_cost_widget}
+
+
 def _guess_mime(upload: UploadFile) -> str:
     ct = (upload.content_type or "").split(";")[0].strip().lower()
     if ct in ("image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"):

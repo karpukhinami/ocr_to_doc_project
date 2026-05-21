@@ -83,6 +83,7 @@ Render не хранит секреты в `render.yaml` в репозитори
 | `OPENROUTER_TIMEOUT_SEC` | `300` |
 | `PANDOC_TIMEOUT_SEC` | `120` |
 | `TMP_ROOT` | `/app/tmp` (уже в Dockerfile / render.yaml) |
+| `SHOW_COST_WIDGET` | `true` — показывать плашку «Затраты (сессия)»; `false` — скрыть. Меняется в Environment без правки кода. |
 
 ---
 

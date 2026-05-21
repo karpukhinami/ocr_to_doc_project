@@ -12,6 +12,18 @@ def _split_origins(raw: str) -> list[str]:
     return [o.strip() for o in raw.split(",") if o.strip()]
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    v = raw.strip().lower()
+    if v in ("1", "true", "yes", "on"):
+        return True
+    if v in ("0", "false", "no", "off"):
+        return False
+    return default
+
+
 class Settings:
     """Загрузка настроек из окружения с разумными значениями по умолчанию."""
 
@@ -23,6 +35,7 @@ class Settings:
     openrouter_timeout_sec: float
     pandoc_timeout_sec: float
     cors_origins: list[str]
+    show_cost_widget: bool
 
     def __init__(self) -> None:
         self.openrouter_api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
@@ -43,6 +56,7 @@ class Settings:
             "http://localhost:5173,http://127.0.0.1:5173",
         )
         self.cors_origins = _split_origins(cors)
+        self.show_cost_widget = _env_bool("SHOW_COST_WIDGET", True)
 
     def ensure_tmp_root(self) -> None:
         """Создаёт корень временных файлов (изолированный каталог)."""

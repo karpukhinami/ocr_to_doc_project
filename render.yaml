@@ -27,3 +27,6 @@ services:
       # URL вашего приложения на Render, например https://ocr-to-doc.onrender.com
       - key: CORS_ORIGINS
         sync: false
+      # Плашка затрат в UI: true — видна, false — скрыта (можно менять без передеплоя кода)
+      - key: SHOW_COST_WIDGET
+        value: "true"

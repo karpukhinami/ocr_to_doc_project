@@ -234,9 +234,11 @@ export default function App() {
   const [saveOptions, setSaveOptions] = useState<SaveDocOptions>(defaultSaveOptions);
   const [saveParamsOpen, setSaveParamsOpen] = useState(false);
   const [incompleteOpen, setIncompleteOpen] = useState(false);
+  const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
   const [expandedMd, setExpandedMd] = useState<Record<string, boolean>>({});
   const [recognizeSummaryError, setRecognizeSummaryError] = useState<string | null>(null);
   const [usageTotals, setUsageTotals] = useState({ prompt: 0, completion: 0 });
+  const [showCostWidget, setShowCostWidget] = useState(false);
 
   const busyRecognize = useRef(false);
   const mountedRef = useRef(true);
@@ -244,6 +246,25 @@ export default function App() {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${API}/config`);
+        if (!res.ok) return;
+        const data = (await res.json()) as { show_cost_widget?: boolean };
+        if (!cancelled && typeof data.show_cost_widget === "boolean") {
+          setShowCostWidget(data.show_cost_widget);
+        }
+      } catch {
+        /* оставляем скрытой при ошибке */
+      }
+    })();
+    return () => {
+      cancelled = true;
     };
   }, []);
 
@@ -549,6 +570,23 @@ export default function App() {
   const costUsd =
     (usageTotals.prompt * PRICE_IN_PER_M + usageTotals.completion * PRICE_OUT_PER_M) / 1_000_000;
 
+  const hasSessionData = items.length > 0 || recognizingId !== null;
+
+  useEffect(() => {
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (!hasSessionData) return;
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [hasSessionData]);
+
+  const requestClearAll = () => {
+    if (items.length === 0) return;
+    setClearConfirmOpen(true);
+  };
+
   /** Вставка скриншотов Ctrl+V с любой точки страницы (кроме полей ввода). */
   useEffect(() => {
     const onPaste = (e: ClipboardEvent) => {
@@ -628,7 +666,7 @@ export default function App() {
           <button type="button" className="btn btn-secondary" onClick={() => setSaveParamsOpen(true)}>
             Параметры сохранения
           </button>
-          <button type="button" className="btn btn-danger" onClick={clearAll}>
+          <button type="button" className="btn btn-danger" onClick={requestClearAll}>
             Очистить всё
           </button>
         </div>
@@ -724,13 +762,15 @@ export default function App() {
         ))}
       </div>
 
-      <div className="cost-widget" title="Сумма по ответам API за эту сессию страницы">
-        <span className="cost-label">Затраты (сессия)</span>
-        <span className="cost-line">
-          in {usageTotals.prompt.toLocaleString("ru-RU")} tok · out {usageTotals.completion.toLocaleString("ru-RU")} tok
-        </span>
-        <span className="cost-line cost-usd">≈ {costUsd < 0.0001 ? "< 0.0001" : costUsd.toFixed(4)} USD</span>
-      </div>
+      {showCostWidget && (
+        <div className="cost-widget" title="Сумма по ответам API за эту сессию страницы">
+          <span className="cost-label">Затраты (сессия)</span>
+          <span className="cost-line">
+            in {usageTotals.prompt.toLocaleString("ru-RU")} tok · out {usageTotals.completion.toLocaleString("ru-RU")} tok
+          </span>
+          <span className="cost-line cost-usd">≈ {costUsd < 0.0001 ? "< 0.0001" : costUsd.toFixed(4)} USD</span>
+        </div>
+      )}
 
       {saveParamsOpen && (
         <div
@@ -815,6 +855,38 @@ export default function App() {
             <div className="actions">
               <button type="button" className="btn btn-primary" onClick={() => setIncompleteOpen(false)}>
                 ОК
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {clearConfirmOpen && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onClick={(e) => e.target === e.currentTarget && setClearConfirmOpen(false)}
+        >
+          <div className="modal" role="dialog" aria-labelledby="clear-confirm-title" aria-modal="true">
+            <h3 id="clear-confirm-title">Очистить всё</h3>
+            <p className="modal-note">Вы уверены, что хотите удалить все распознанные страницы?</p>
+            <div className="actions modal-actions-split">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => setClearConfirmOpen(false)}
+              >
+                Нет
+              </button>
+              <button
+                type="button"
+                className="btn btn-danger"
+                onClick={() => {
+                  clearAll();
+                  setClearConfirmOpen(false);
+                }}
+              >
+                Да
               </button>
             </div>
           </div>
